@@ -1,0 +1,372 @@
+# Release Actions
+
+A reusable GitHub Action written in Go for pull-request classification,
+changelog updates, release preparation PRs, and tagged GitHub Releases.
+It works with Go, Python, JavaScript, and other repositories: package builds,
+version files, and registry publishing remain in the calling project.
+The default `latest-changes` command reports `latest-changes/label` and updates
+release notes after merges. Release-note
+commits contain a single Gitmoji title with no body, trailers, or `[skip ci]`.
+The default setup uses the job's `GITHUB_TOKEN`, without a server, webhook,
+App registration, or private key. Protected branches can use a separate
+release-note token. Commit author and committer are `github-actions[bot]`.
+
+The behavior is adapted from
+[tiangolo/latest-changes-app](https://github.com/tiangolo/latest-changes-app).
+The original MIT notice is retained in [LICENSE](LICENSE), and the upstream
+revision is documented in [UPSTREAM.md](UPSTREAM.md). Implementation and tests
+are written in Go; the upstream source is not bundled.
+
+## Release lifecycle
+
+| Command | Trigger | Result |
+| --- | --- | --- |
+| `latest-changes` (default) | PR events; manual PR recovery | Classify PRs and accumulate unreleased entries |
+| `prepare-release` | `workflow_dispatch` on the default branch | Archive entries and open a labeled release PR |
+| `publish-release` | Tag push; manual recovery on the default branch | Verify the tag and publish its versioned changelog section |
+
+Copy [prepare-release.yml](examples/prepare-release.yml) into the target
+repository. In Actions, run **Prepare Release** from the default branch and
+enter an exact tag such as `v0.1.0` and an optional date. The action reads a
+pinned snapshot of the default branch, preserves `## Latest Changes`, inserts
+`## 0.1.0 (YYYY-MM-DD)`, commits to `release/v0.1.0`, and opens
+`🔖 Prepare v0.1.0 release`. The `release` label excludes that PR from changelog
+entries. Release commits have a title only and use the bot identity.
+
+Review and merge the PR, wait for default-branch CI, and push the tag yourself.
+The action does not merge PRs or create/move tags. To automate GitHub Release
+creation, add the `publish-release` step from
+[publish-release.yml](examples/publish-release.yml) after your own tag validation,
+build, and test jobs (`needs: [verify]`, for example). That file is a minimal
+integration example; it does not run your project's tests. Avoid a second
+workflow that creates the same Release.
+
+Publication verifies that an existing lightweight or annotated tag resolves to
+a commit reachable from the repository's default branch. On tag pushes it also
+checks the workflow commit SHA. Notes are read from that immutable commit,
+not current main. `draft: 'true'` creates a draft. SemVer prereleases such as
+`v1.0.0-rc.1` are marked as prereleases automatically. Exact `X.Y.Z` and `vX.Y.Z`
+tags are accepted; build metadata, leading zeroes, duplicate release sections,
+empty notes, and non-increasing preparation versions are rejected.
+
+Reruns reuse an open release PR without overwriting it. A partially created
+branch can be recovered if its notes still match the expected source or result;
+different notes fail for manual review. Publication reuses a matching Release;
+a conflicting body, draft setting, or prerelease flag fails instead of editing
+an existing Release. Retry infrastructure failures, but never move published tags.
+
+### Inputs and outputs
+
+| Input | Default | Purpose |
+| --- | --- | --- |
+| `command` | `latest-changes` | Select one of the three commands |
+| `token` | Required | Credential for that command |
+| `notes-token` | `token` | Separate credential for default-branch changelog updates only |
+| `pull-request` | Empty | Manual recovery of one PR |
+| `version` | Pushed tag for publication | Exact release tag, required for preparation/manual publication |
+| `release-date` | Today in UTC | Preparation date in `YYYY-MM-DD` format |
+| `notes-file` | Auto-detect | Explicit changelog path, set consistently in all workflows |
+| `draft` | `false` | Create a draft GitHub Release |
+
+Release commands output `version` (without `v`), `tag` (exact input),
+`pull-request` (preparation PR number, otherwise `0`), and `url`.
+A rerun does not change an existing PR's date; edit its version heading before
+merging if the intended publication date changes.
+
+### Release credentials
+
+Preparation needs Contents and Pull requests write access, plus Issues write
+access to create the `release` label in a new repository. A protected default
+branch can remain protected: preparation only writes a new branch and opens a PR.
+When using `GITHUB_TOKEN`, enable **Allow GitHub Actions to create and approve
+pull requests** in repository Actions settings. PRs created with that token do
+not trigger ordinary `pull_request` CI. To trigger checks automatically, provide
+a scoped PAT or GitHub App token as the `RELEASE_ACTIONS_TOKEN` secret used by
+the example. Grant access only to the target repository and the permissions
+above; no default-branch bypass is needed for preparation.
+
+Publication needs Contents write access. `notes-token` is not used by either
+release command. Custom credentials used for release preparation do not change
+the token or status source used by the separate classification workflow.
+
+### Migrating from Latest Changes
+
+Replace `hainuoli/latest-changes@OLD_SHA` with a reviewed
+`hainuoli/release-actions@NEW_SHA`. GitHub does not redirect Action calls after
+repository renames. The default command, `.github/latest-changes.yml`,
+`latest-changes/label`, and `LATEST_CHANGES_TOKEN` secret remain compatible,
+so existing branch protection rules do not need a new status name.
+
+## Use
+
+Publish this repository, then copy [examples/latest-changes.yml](examples/latest-changes.yml)
+to `.github/workflows/latest-changes.yml` in the target repository. Replace
+`hainuoli/release-actions@main` with a reviewed full commit SHA before production use.
+The action builds its own source with Go on the runner. A checkout of the target
+repository is unnecessary.
+
+The workflow listens to `pull_request_target` for opened, edited, synchronize,
+reopened, labeled, unlabeled, and closed events. This supports contributions
+from forks while running trusted action code. It reads PR metadata and changed
+paths through the API; it never checks out or executes PR code. Keep it separate
+from workflows that build or test contributions, and never add a PR-head checkout
+to this privileged job.
+
+Grant only these repository permissions in the calling workflow:
+
+```yaml
+permissions:
+  contents: write
+  pull-requests: write
+  statuses: write
+```
+
+Pass `${{ secrets.GITHUB_TOKEN }}` to the action's `token` input. GitHub provides
+and expires this token for each job; no repository secret needs to be created.
+Standard GitHub-hosted runners are free for public repositories. Private
+repository usage is subject to the account's Actions allowance and billing.
+
+The example serializes runs for the repository with `queue: max`, preserving up
+to 100 pending runs rather than replacing pending merge events. Runs already
+in progress are not canceled. GitHub's queue limits still apply. If a run fails
+or is canceled, rerun it in Actions, or use **Run workflow** and enter its PR
+number. Recovery re-reads the current PR: open PRs are classified again, merged
+PRs update notes, and closed unmerged PRs are skipped.
+
+`latest-changes/label` is the required classification status; the workflow job's
+completion alone does not mean a category has been selected. Require this status
+from GitHub Actions only after a successful demo. Branch rules can block direct
+file updates with `GITHUB_TOKEN`; see the protected-branch setup below.
+
+Disable the old Latest Changes App for the target repository before enabling
+this workflow, so only one implementation manages its labels and release notes.
+Remove its old ruleset bypass and status source when completing the migration.
+Keep the shared path-rule configuration below.
+
+## Protected branches
+
+If the default branch requires PRs or status checks, pass a separate credential
+through `notes-token`. For example, create a fine-grained personal access token
+owned by a repository admin who already has **Always allow** ruleset bypass.
+Limit repository access to the target repository, grant only **Contents: Read
+and write**, and choose an expiration date. The token does not create bypass
+rights: its owner must already be allowed to write directly to the branch.
+
+Store it as the repository Actions secret `LATEST_CHANGES_TOKEN`. Do not put
+the token in workflow source or logs. Then use:
+
+```yaml
+permissions:
+  contents: read
+  pull-requests: write
+  statuses: write
+```
+
+Inside the existing job's steps, pin the action to a reviewed full commit SHA:
+
+```yaml
+- uses: hainuoli/release-actions@main
+  with:
+    token: ${{ secrets.GITHUB_TOKEN }}
+    notes-token: ${{ secrets.LATEST_CHANGES_TOKEN }}
+    pull-request: ${{ inputs.pull-request }}
+```
+
+`token` handles repository reads, PR metadata, labels, and commit statuses.
+`notes-token` is used only for the release-note file update. Keeping the default
+workflow token for classification preserves GitHub Actions as the source of
+`latest-changes/label`. If `notes-token` is omitted or empty, file updates use
+`token`, preserving the default setup. A denied notes-token write fails without
+falling back to the workflow token.
+
+The action explicitly sets both commit author and committer to
+`github-actions[bot]` with email
+`41898282+github-actions[bot]@users.noreply.github.com`. GitHub still authorizes
+and audits the write as the token owner. A Contents-write PAT is scoped to a
+repository, not just the release-note file. Renew the stored secret before its
+expiration; no App or ruleset change is required when the owner's bypass is
+already configured.
+
+## Repository configuration
+
+Add `.github/latest-changes.yml` to each managed repository:
+
+```yaml
+commit-title: "📝 Update release notes"
+label-from-title: true
+auto-labels:
+  docs:
+    - docs/**
+    - README*.md
+    - CONTRIBUTING.md
+    - SECURITY.md
+  upgrade:
+    - go.mod
+    - go.sum
+  internal:
+    - .github/**
+    - .gitignore
+    - .gitattributes
+    - AGENTS.md
+```
+
+`commit-title` is an extension of this Go implementation. Its default is
+`📝 Update release notes`. It requires one supported Gitmoji, a space, a
+capitalized English subject, and at most 72 Unicode code points. Consecutive
+spaces, trailing whitespace, a trailing period, and control characters are
+rejected. No body, trailers, or `[skip ci]` is added. The supported emoji are
+✨ 🐛 💥 🔒 📝 ✏ 🌐 ⬆ ⬇ ♻ 🎨 ⚡ 🔥 👷 🔧 🔨 🚨 ✅ 🔖 🎉 📄 🙈,
+with an optional trailing variation selector.
+
+The official hosted App does not support `commit-title` or `label-from-title`;
+disable the old App before adding them. A configuration file must contain an
+`auto-labels` mapping. With no configuration file, the action checks manual
+labels and uses the default commit title.
+
+`label-from-title` is optional and defaults to `false`, preserving existing
+path-based behavior. Set it to `true` to classify unlabelled PRs from their
+Gitmoji titles, including source-code changes. Titles use the same format and
+72-character limit as `commit-title`. They are read as data, never executed.
+
+| Prefix | Label |
+| --- | --- |
+| ✨ | `feature` |
+| 🐛 | `bug` |
+| 💥 | `breaking` |
+| 🔒 | `security` |
+| 📝, ✏ | `docs` |
+| 🌐 | `lang-all` |
+| ⬆ | `upgrade` |
+| ♻, 🎨, ⚡, 🔥 | `refactor` |
+| 👷, 🔧, 🔨, 🚨, ✅ | `internal` |
+| 🔖 | `release` |
+
+An optional trailing emoji variation selector is accepted. Other supported
+prefixes (⬇, 🎉, 📄, 🙈) have no title mapping and fall back to path rules.
+
+With title classification enabled, an existing category takes precedence;
+otherwise the title is tried before path rules. Adding a recognized label
+manually replaces the previous category, while unrelated labels are preserved.
+Later title edits and pushes keep the selected category, since an existing
+label may have been chosen manually. To change an already classified PR's
+category, add the desired category label; changing only its title does not
+replace the label. An unclassified PR can also be classified on `edited`,
+`reopened`, `labeled`, or `unlabeled` events when its current title maps to a
+category. Removing the last category may therefore reapply the title category.
+
+Use `auto-labels: {}` to disable path classification. To use only manual
+classification, also leave `label-from-title` disabled.
+
+Path rules match repository-relative POSIX paths, including recursive `**`.
+Rules are ordered; the first matching rule for a label wins. For example:
+
+```yaml
+auto-labels:
+  docs:
+    - exclude: docs/generated/**
+    - docs/**
+```
+
+Path-based selection requires every changed path to be classified, including
+both paths of a rename. Mixed source and documentation changes wait for a
+manual category unless title classification selects one. Path selection runs
+on `opened` and `synchronize`; label changes respect manual selection. With
+title classification disabled, new commits may promote a category by priority.
+Other labels such as `help wanted` are preserved.
+
+Supported categories in precedence and output order:
+
+| Label | Section |
+| --- | --- |
+| breaking | Breaking Changes |
+| security | Security Fixes |
+| feature | Features |
+| bug | Fixes |
+| refactor | Refactors |
+| upgrade | Upgrades |
+| docs | Docs |
+| lang-all | Translations |
+| infra | Infrastructure |
+| internal | Internal |
+
+The `release` label skips the release-note update and is mutually exclusive
+with category labels. Without automatic-label configuration, zero category
+labels produce a pending status and multiple labels produce failure. With
+configuration, the action selects and normalizes one category.
+
+Dependency updates are classified through path rules rather than dependency-file
+semantics. Use the `prepare-release` command below to archive accumulated entries into a
+version and open a release PR.
+
+## Release notes
+
+The first existing file is used, in this order:
+
+1. `release-notes.md`
+2. `docs/release-notes.md`
+3. `docs/en/docs/release-notes.md`
+4. `CHANGELOG.md`
+
+If no file exists, `release-notes.md` is created. Existing files must contain
+`## Latest Changes`. Its level-three headings must use the supported section
+names without duplicates. Historical releases are preserved. The renderer is
+tested against golden outputs generated from the pinned upstream implementation.
+Repeated delivery does not duplicate an existing entry; conflicting file writes
+re-read the document and retry up to three times.
+
+## Execution and recovery
+
+The process reads `GITHUB_EVENT_PATH`, verifies that its repository name and ID
+match `GITHUB_REPOSITORY` and the API, refreshes the PR, and handles one event.
+Configuration is read from the current default branch. PR titles, branch names,
+and file contents are treated as data, not interpolated into shell scripts.
+The run has a 90-second processing deadline; each API request has a five-second
+timeout. Operational errors produce a nonzero exit code and appear in Actions. There is
+no local queue or persistent service to maintain.
+
+The default `GITHUB_TOKEN` does not trigger new push workflows for release-note
+commits, so `[skip ci]` is unnecessary. Label changes made with this token also
+do not start additional labeled/unlabeled workflow runs; the action computes
+the final classification status in the same run. A PAT supplied as `notes-token`
+can trigger push workflows for release-note commits. Label and status operations
+still use `token`; changing that input to a custom credential may also change
+their triggering behavior and required-status source. Commits remain title-only,
+without `[skip ci]`, regardless of the supplied credential.
+
+Existing release notes and SHA-conflict retries make reruns idempotent. A
+canceled, failed, or queue-rejected run must be rerun manually; this action does
+not poll for missed events. The provided `workflow_dispatch` input is the
+recovery mechanism.
+
+## Development
+
+Requires Go 1.23 or newer. The composite action sets up the stable Go release.
+
+```sh
+go mod verify
+go vet ./...
+go test -race -count=1 ./...
+go build -trimpath -o bin/release-actions ./cmd/release-actions
+```
+
+For local execution, set `GITHUB_TOKEN`, `GITHUB_REPOSITORY`,
+`GITHUB_EVENT_NAME`, and `GITHUB_EVENT_PATH` to a saved event JSON file.
+Supported events are `pull_request`, `pull_request_target`, and
+`workflow_dispatch`; the last also requires `LATEST_CHANGES_PULL_REQUEST`.
+Set `LATEST_CHANGES_NOTES_TOKEN` to use a separate file-update credential.
+Local execution with a real token can write to GitHub. Tests use only local
+mock servers and temporary event files and do not require live credentials.
+
+Tests cover the Actions-to-mock-GitHub flow, recovery, repository identity
+checks, credential separation, bot commit metadata, denied-write propagation,
+title and path label selection, manual overrides, current-head statuses,
+file pagination, conflicts, reruns, and title-only commits. Rendering is checked against 14 upstream golden
+outputs. Production dependencies are limited to YAML parsing and recursive
+path matching. HTTP and JSON use the Go standard library.
+
+Agent-created commits require individual approval and a single-line Gitmoji
+message, as described in [AGENTS.md](AGENTS.md).
+
+References: [token-triggered events](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow),
+[workflow concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency),
+and [Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions).

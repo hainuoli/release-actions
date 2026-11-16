@@ -1,0 +1,27 @@
+name: Publish Release
+
+on:
+  push:
+    tags: ['v*', '[0-9]*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    # In production, add needs: [verify] for your project's tag build/test jobs.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: hainuoli/release-actions@main
+        with:
+          command: publish-release
+          token: ${{ github.token }}
+          # draft: 'true'
+          # notes-file: CHANGELOG.md

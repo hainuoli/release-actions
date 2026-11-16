@@ -1,0 +1,88 @@
+name: Release Actions
+author: hainuoli
+description: Classify pull requests, prepare changelog release PRs, and publish tagged GitHub Releases
+branding:
+  icon: file-text
+  color: blue
+
+inputs:
+  command:
+    description: latest-changes, prepare-release, or publish-release
+    required: false
+    default: latest-changes
+  token:
+    description: GitHub token with the permissions required by the selected command
+    required: true
+  notes-token:
+    description: Optional contents-write token for release-note commits; defaults to token
+    required: false
+    default: ''
+  pull-request:
+    description: Pull request number to recover through workflow_dispatch
+    required: false
+    default: ''
+  version:
+    description: Exact tag to prepare or publish, such as v0.1.0; inferred on tag pushes
+    required: false
+    default: ''
+  release-date:
+    description: Release date in YYYY-MM-DD format; defaults to today in UTC for preparation
+    required: false
+    default: ''
+  notes-file:
+    description: Repository-relative changelog path; defaults to existing release-note file detection
+    required: false
+    default: ''
+  draft:
+    description: Create a draft GitHub Release instead of publishing; only used by publish-release
+    required: false
+    default: 'false'
+
+outputs:
+  version:
+    description: Unprefixed version number
+    value: ${{ steps.run.outputs.version }}
+  tag:
+    description: Exact release tag
+    value: ${{ steps.run.outputs.tag }}
+  pull-request:
+    description: Release preparation PR number (0 for publication)
+    value: ${{ steps.run.outputs.pull-request }}
+  url:
+    description: Release preparation PR or GitHub Release URL
+    value: ${{ steps.run.outputs.url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+      with:
+        go-version: stable
+        cache: false
+    - name: Build Release Actions
+      id: build
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      env:
+        GOWORK: 'off'
+        GOTOOLCHAIN: local
+      run: |
+        set -euo pipefail
+        build_dir=$(mktemp -d "$RUNNER_TEMP/release-actions.XXXXXX")
+        go build -mod=readonly -trimpath -o "$build_dir/release-actions" ./cmd/release-actions
+        echo "binary=$build_dir/release-actions" >> "$GITHUB_OUTPUT"
+    - name: Run Release Actions
+      id: run
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.token }}
+        RELEASE_ACTIONS_COMMAND: ${{ inputs.command }}
+        RELEASE_ACTIONS_VERSION: ${{ inputs.version }}
+        RELEASE_ACTIONS_DATE: ${{ inputs.release-date }}
+        RELEASE_ACTIONS_NOTES_FILE: ${{ inputs.notes-file }}
+        RELEASE_ACTIONS_DRAFT: ${{ inputs.draft }}
+        LATEST_CHANGES_NOTES_TOKEN: ${{ inputs.notes-token }}
+        LATEST_CHANGES_PULL_REQUEST: ${{ inputs.pull-request }}
+        RELEASE_ACTIONS_BINARY: ${{ steps.build.outputs.binary }}
+      run: '"$RELEASE_ACTIONS_BINARY"'
